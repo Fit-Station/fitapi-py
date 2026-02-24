@@ -56,9 +56,13 @@ global baseUrl
 
 
 baseUrl = "https://fitapi.fitstationcrm.com"
+# Yeni sunucu/proxy chunked encoding bazen bozuyor; Connection: close ile Content-Length alınır, hata önlenir
+_http_headers = {"Connection": "close"}
+_request_timeout = 15
+
 fetchDataUrl = baseUrl+'/Entry/GetStartUpData'
 sUobj = {'DeviceId': deviceId}
-resultOfPost = requests.post(fetchDataUrl, json=sUobj)
+resultOfPost = requests.post(fetchDataUrl, json=sUobj, headers=_http_headers, timeout=_request_timeout)
 startUpDataResult = json.loads(resultOfPost.text)
 if startUpDataResult["isSuccess"]:
     yon1_pin = int(startUpDataResult["data"]["yon1"])
@@ -145,7 +149,7 @@ C = Canvas(pencere, bg="black")
 pencere.after(1000, lambda: pencere.wm_attributes('-fullscreen', 'true'))
 filename = None
 try:
-    r = requests.get(baseUrl + "/entry/yenifitstation.png", timeout=5)
+    r = requests.get(baseUrl + "/entry/yenifitstation.png", headers=_http_headers, timeout=10)
     if r.status_code == 200 and r.content:
         img = Image.open(BytesIO(r.content))
         filename = ImageTk.PhotoImage(img)
@@ -228,7 +232,7 @@ def dialog():
         url = baseUrl+'/Entry/GetMembershipInformation'
         myobj = {'EntryId': KartNoInput.get(), 'BranchId': branchId}
         KartNoInput.delete(0, "end")
-        x = requests.post(url, json=myobj)
+        x = requests.post(url, json=myobj, headers=_http_headers, timeout=_request_timeout)
         ali = json.loads(x.text)
         ValidationQuery(ali)
     except Exception as er:
@@ -253,7 +257,7 @@ def ValidationQuery(ali):
             label1 = tkinter.Label()
             try:
                 try:
-                    response = requests.get(pathOfImage)
+                    response = requests.get(pathOfImage, headers=_http_headers, timeout=10)
                     img_data = response.content
                     img = Image.open(BytesIO(img_data))
                     test = ImageTk.PhotoImage(img)
@@ -299,7 +303,7 @@ def SendExceptionInfo(e):
     try:
         url = baseUrl+'/Entry/GetExceptionInfo'
         myobj = {'EntryId': deviceId,  'BranchId': branchId, 'ErrorMessage': str(e)}
-        requests.post(url, json=myobj)
+        requests.post(url, json=myobj, headers=_http_headers, timeout=_request_timeout)
     except:
         SonucDeger.config(text="Hata olustu")
         SonucDeger.after(beklemeSuresi, lambda: SonucDeger.config(text=""))
