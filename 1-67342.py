@@ -21,6 +21,10 @@ from io import BytesIO
 import time
 import os
 import sys
+import traceback
+
+# Canlı hata görmek için True yapın (turnike konsolunda tam hata + traceback)
+DEBUG_TURNIKE_LOG = True
 
 from flask import Flask
 import jwt
@@ -66,7 +70,10 @@ def _post_urllib(url, data):
         ctx = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=_request_timeout, context=ctx) as resp:
             return json.loads(resp.read().decode())
-    except Exception:
+    except Exception as e:
+        if DEBUG_TURNIKE_LOG:
+            print("[POST urllib] URL:", url, "Hata:", e)
+            traceback.print_exc()
         return None
 
 
@@ -79,7 +86,10 @@ def safe_post(url, data):
         r.raise_for_status()
         return r.json()
     except Exception as e:
+        print("POST ERROR URL:", url)
         print("POST ERROR:", e)
+        if DEBUG_TURNIKE_LOG:
+            traceback.print_exc()
         return {"isSuccess": False, "data": {"message": "Connection error"}}
 
 
@@ -89,7 +99,9 @@ def safe_get(url):
         r.raise_for_status()
         return r.content
     except Exception as e:
-        print("GET ERROR:", e)
+        print("GET ERROR URL:", url, "|", e)
+        if DEBUG_TURNIKE_LOG:
+            traceback.print_exc()
         return None
 
 
