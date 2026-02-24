@@ -12,6 +12,8 @@ import tkinter.font as font
 import requests
 import json
 import qrcode
+import urllib.request
+import ssl
 
 from threading import Timer, Thread
 from PIL import ImageTk, Image
@@ -51,8 +53,28 @@ session.mount("http://", adapter)
 session.mount("https://", adapter)
 
 
+def _post_urllib(url, data):
+    """Chunked encoding hatasını önlemek için urllib ile POST (Connection: close)."""
+    try:
+        body = json.dumps(data).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        ctx = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=_request_timeout, context=ctx) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
 def safe_post(url, data):
     try:
+        out = _post_urllib(url, data)
+        if out is not None:
+            return out
         r = session.post(url, json=data, headers=_http_headers, timeout=_request_timeout)
         r.raise_for_status()
         return r.json()
@@ -269,7 +291,11 @@ def callback(ch,method,properties,body):
 
 
 def receiver():
+    reconnect_delay = 15
     while True:
+        if not (queueName and queueUrl):
+            time.sleep(reconnect_delay)
+            continue
         try:
             parameters = pika.URLParameters(queueUrl)
             connection = pika.BlockingConnection(parameters)
@@ -284,11 +310,12 @@ def receiver():
 
             channel.basic_consume(queue=queue_name,on_message_callback=callback,auto_ack=True)
 
+            reconnect_delay = 15
             channel.start_consuming()
 
         except Exception as e:
-            print("RabbitMQ reconnecting...",e)
-            time.sleep(5)
+            print("RabbitMQ reconnecting...", e)
+            time.sleep(reconnect_delay)
 
 
 CreateQr()
