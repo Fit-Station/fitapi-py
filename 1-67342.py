@@ -141,7 +141,7 @@ def SendExceptionInfo(e):
 
 
 # -----------------------------------------------------------------------------
-# STARTUP CONFIG
+# STARTUP CONFIG (old.py ile aynı besleme: isSuccess ise data içinden doğrudan al)
 # -----------------------------------------------------------------------------
 sUobj = {"DeviceId": deviceId}
 startUpDataResult = safe_post(fetchDataUrl, sUobj)
@@ -157,21 +157,15 @@ queueName = ""
 queueUrl = ""
 
 if startUpDataResult.get("isSuccess"):
-    data = startUpDataResult["data"]
-    try:
-        yon1_pin = int(data.get("yon1", yon1_pin))
-        yon2_pin = int(data.get("yon2", yon2_pin))
-        qrSuresi = int(data.get("qrSuresi", qrSuresi))
-        beklemeSuresi = int(data.get("beklemeSuresi", beklemeSuresi))
-        qrbeklemeSuresi = int(data.get("qrBeklemeSuresi", qrbeklemeSuresi))
-        isSerial = int(data.get("isSerial", isSerial))
-        isGpio = int(data.get("isGpio", isGpio))
-        queueName = data.get("queueName", "")
-        queueUrl = data.get("queueUrl", "")
-    except Exception as e:
-        print("[STARTUP] Parse error:", e)
-        if DEBUG_TURNIKE_LOG:
-            traceback.print_exc()
+    yon1_pin = int(startUpDataResult["data"]["yon1"])
+    yon2_pin = int(startUpDataResult["data"]["yon2"])
+    qrSuresi = int(startUpDataResult["data"]["qrSuresi"])
+    beklemeSuresi = int(startUpDataResult["data"]["beklemeSuresi"])
+    qrbeklemeSuresi = int(startUpDataResult["data"]["qrBeklemeSuresi"])
+    isSerial = int(startUpDataResult["data"]["isSerial"])
+    isGpio = int(startUpDataResult["data"]["isGpio"])
+    queueName = startUpDataResult["data"]["queueName"]
+    queueUrl = startUpDataResult["data"]["queueUrl"]
 
 
 # -----------------------------------------------------------------------------
@@ -232,13 +226,11 @@ yon1 = None
 yon2 = None
 
 def init_gpio():
+    """old.py gibi: yon1 her zaman oluşturulur, başlangıçta on()."""
     global yon1, yon2
-    if not isGpio:
-        return
-
     try:
         yon1 = IOS(yon1_pin)
-        yon1.off()
+        yon1.on()
     except Exception as e:
         print(f"[GPIO] Pin {yon1_pin} baslatilamadi (GPIO busy): {e}")
         if DEBUG_TURNIKE_LOG:
@@ -249,40 +241,16 @@ def init_gpio():
         yon2 = IOS(yon2_pin)
         yon2.off()
     except Exception as e:
-        print(f"[GPIO] Pin {yon2_pin} baslatilamadi (GPIO busy): {e}")
-        if DEBUG_TURNIKE_LOG:
-            traceback.print_exc()
+        print(f"[GPIO] Pin {yon2_pin} baslatilamadi: {e}")
         yon2 = None
 
-def gpio_pulse(dev: IOS, duration=0.25):
-    if dev is None:
-        return
-    dev.on()
-    time.sleep(duration)
-    dev.off()
-
 def TurnstyleTurn(direction):
-    """
-    direction örnek:
-      - 1: yon1
-      - 2: yon2
-    API farklı dönüyorsa burayı uyarlayın.
-    """
+    """old.py gibi: her zaman yon1 ile dönüş (on -> 0.25s -> off)."""
     try:
-        if not isGpio:
-            return
-
-        # direction normalize
-        try:
-            d = int(direction)
-        except:
-            d = 1
-
-        if d == 2:
-            gpio_pulse(yon2)
-        else:
-            gpio_pulse(yon1)
-
+        if yon1 is not None:
+            yon1.on()
+            time.sleep(0.25)
+            yon1.off()
     except Exception as e:
         SendExceptionInfo(e)
 
