@@ -55,7 +55,7 @@ global baseUrl
 
 
 
-baseUrl = "https://fitapi.fitstationcrm.com.com"
+baseUrl = "https://fitapi.fitstationcrm.com"
 fetchDataUrl = baseUrl+'/Entry/GetStartUpData'
 sUobj = {'DeviceId': deviceId}
 resultOfPost = requests.post(fetchDataUrl, json=sUobj)
