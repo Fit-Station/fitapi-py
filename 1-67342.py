@@ -1,111 +1,149 @@
 #!/usr/bin/python3
-import logging
-import tkinter
-import random
-import serial
-import string
-import PIL
-import tkinter as tk
-from tkinter.ttk import *
-from tkinter import *
-import tkinter.font as font
-import requests
-import json
-import qrcode
-import urllib.request
-import ssl
+# -*- coding: utf-8 -*-
 
-from threading import Timer, Thread
-from PIL import ImageTk, Image
-from io import BytesIO
-import time
 import os
 import sys
+import time
+import json
+import ssl
+import random
+import string
 import traceback
+import tkinter as tk
+import tkinter.font as font
+from tkinter import Tk, Canvas, Label, Entry
 
-# Canlı hata görmek için True yapın (turnike konsolunda tam hata + traceback)
-DEBUG_TURNIKE_LOG = True
+from threading import Timer, Thread
+from io import BytesIO
 
-from flask import Flask
-import jwt
-import datetime
-from datetime import datetime
+import requests
+from requests.exceptions import ConnectionError, ReadTimeout, SSLError
+from requests.exceptions import ChunkedEncodingError
+
+import qrcode
+from PIL import ImageTk, Image
+
 import pika
-
 from gpiozero import OutputDevice as IOS
 import RPi.GPIO as GPIO
+import atexit
 
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
-GPIO.setwarnings(False)
+# -----------------------------------------------------------------------------
+# AYARLAR
+# -----------------------------------------------------------------------------
+DEBUG_TURNIKE_LOG = False
 
 branchId = "68736ED4-8A1B-4C89-B8DC-AF07C4062AEB"
 deviceId = "A36E7C4D-A523-4B54-8104-3C6628499E47"
-
 baseUrl = "https://fitapi.fitstationcrm.com"
 
-_http_headers = {"Connection": "close"}
-_request_timeout = 15
+fetchDataUrl = baseUrl + "/Entry/GetStartUpData"
 
-fetchDataUrl = baseUrl + '/Entry/GetStartUpData'
+REQUEST_TIMEOUT = 15
+GET_TIMEOUT = 10
 
-session = requests.Session()
-retry = Retry(total=3, backoff_factor=1, status_forcelist=[500,502,503,504])
-adapter = HTTPAdapter(max_retries=retry)
-session.mount("http://", adapter)
-session.mount("https://", adapter)
+BASE_HEADERS = {
+    "Connection": "close",
+    "Accept": "application/json",
+    "Accept-Encoding": "identity",  # gzip/chunk karmaşasını azaltır
+    "Content-Type": "application/json",
+}
 
+GET_HEADERS = {
+    "Connection": "close",
+    "Accept-Encoding": "identity",
+}
 
-def _post_urllib(url, data):
-    """Chunked encoding hatasını önlemek için urllib ile POST (Connection: close)."""
+GPIO.setwarnings(False)
+
+# -----------------------------------------------------------------------------
+# TEK INSTANCE LOCK (GPIO busy'nin en yaygın sebebi)
+# -----------------------------------------------------------------------------
+LOCK_FILE = "/tmp/turnike.lock"
+try:
+    lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+except FileExistsError:
+    print("[LOCK] Uygulama zaten calisiyor. Cikiliyor.")
+    sys.exit(0)
+
+def _cleanup_lock():
     try:
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json", "Connection": "close"},
-            method="POST",
-        )
-        ctx = ssl.create_default_context()
-        with urllib.request.urlopen(req, timeout=_request_timeout, context=ctx) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        if DEBUG_TURNIKE_LOG:
-            print("[POST urllib] URL:", url, "Hata:", e)
-            traceback.print_exc()
-        return None
-
-
-def safe_post(url, data):
+        os.close(lock_fd)
+    except:
+        pass
     try:
-        out = _post_urllib(url, data)
-        if out is not None:
-            return out
-        r = session.post(url, json=data, headers=_http_headers, timeout=_request_timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        print("POST ERROR URL:", url)
-        print("POST ERROR:", e)
-        if DEBUG_TURNIKE_LOG:
-            traceback.print_exc()
-        return {"isSuccess": False, "data": {"message": "Connection error"}}
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
+    except:
+        pass
+
+atexit.register(_cleanup_lock)
+
+# -----------------------------------------------------------------------------
+# NETWORK: STABIL SAFE GET/POST
+# -----------------------------------------------------------------------------
+def safe_post(url, data, tries=5, backoff=1.0):
+    last_err = None
+    payload = json.dumps(data).encode("utf-8")
+
+    for i in range(tries):
+        try:
+            r = requests.post(
+                url,
+                data=payload,
+                headers=BASE_HEADERS,
+                timeout=REQUEST_TIMEOUT,
+            )
+            r.raise_for_status()
+            return r.json()
+        except (ChunkedEncodingError, ConnectionError, ReadTimeout, SSLError) as e:
+            last_err = e
+            time.sleep(backoff * (i + 1))
+        except Exception as e:
+            last_err = e
+            break
+
+    print("POST ERROR URL:", url)
+    print("POST ERROR:", last_err)
+    if DEBUG_TURNIKE_LOG:
+        traceback.print_exc()
+    return {"isSuccess": False, "data": {"message": "Connection error"}}
 
 
-def safe_get(url):
+def safe_get(url, tries=5, backoff=1.0):
+    last_err = None
+    for i in range(tries):
+        try:
+            r = requests.get(url, headers=GET_HEADERS, timeout=GET_TIMEOUT)
+            r.raise_for_status()
+            return r.content
+        except (ChunkedEncodingError, ConnectionError, ReadTimeout, SSLError) as e:
+            last_err = e
+            time.sleep(backoff * (i + 1))
+        except Exception as e:
+            last_err = e
+            break
+
+    print("GET ERROR URL:", url, "|", last_err)
+    if DEBUG_TURNIKE_LOG:
+        traceback.print_exc()
+    return None
+
+
+def SendExceptionInfo(e):
     try:
-        r = session.get(url, headers=_http_headers, timeout=10)
-        r.raise_for_status()
-        return r.content
-    except Exception as e:
-        print("GET ERROR URL:", url, "|", e)
-        if DEBUG_TURNIKE_LOG:
-            traceback.print_exc()
-        return None
+        url = baseUrl + "/Entry/GetExceptionInfo"
+        myobj = {"EntryId": deviceId, "BranchId": branchId, "ErrorMessage": str(e)}
+        # Bu kısım kritik değil; hata olursa sessiz geç
+        requests.post(url, data=json.dumps(myobj).encode("utf-8"), headers=BASE_HEADERS, timeout=REQUEST_TIMEOUT)
+    except:
+        pass
 
 
-sUobj = {'DeviceId': deviceId}
+# -----------------------------------------------------------------------------
+# STARTUP CONFIG
+# -----------------------------------------------------------------------------
+sUobj = {"DeviceId": deviceId}
 startUpDataResult = safe_post(fetchDataUrl, sUobj)
 
 yon1_pin = 17
@@ -120,29 +158,35 @@ queueUrl = ""
 
 if startUpDataResult.get("isSuccess"):
     data = startUpDataResult["data"]
-    yon1_pin = int(data["yon1"])
-    yon2_pin = int(data["yon2"])
-    qrSuresi = int(data["qrSuresi"])
-    beklemeSuresi = int(data["beklemeSuresi"])
-    qrbeklemeSuresi = int(data["qrBeklemeSuresi"])
-    isSerial = int(data["isSerial"])
-    isGpio = int(data["isGpio"])
-    queueName = data["queueName"]
-    queueUrl = data["queueUrl"]
+    try:
+        yon1_pin = int(data.get("yon1", yon1_pin))
+        yon2_pin = int(data.get("yon2", yon2_pin))
+        qrSuresi = int(data.get("qrSuresi", qrSuresi))
+        beklemeSuresi = int(data.get("beklemeSuresi", beklemeSuresi))
+        qrbeklemeSuresi = int(data.get("qrBeklemeSuresi", qrbeklemeSuresi))
+        isSerial = int(data.get("isSerial", isSerial))
+        isGpio = int(data.get("isGpio", isGpio))
+        queueName = data.get("queueName", "")
+        queueUrl = data.get("queueUrl", "")
+    except Exception as e:
+        print("[STARTUP] Parse error:", e)
+        if DEBUG_TURNIKE_LOG:
+            traceback.print_exc()
 
 
+# -----------------------------------------------------------------------------
+# UI HELPERS
+# -----------------------------------------------------------------------------
 def CreateControls(container, bgColor, fgColor, text, x, y, fontx):
     lbl = Label(container, bg=bgColor, fg=fgColor)
     lbl.config(text=text)
     lbl.place(x=x, y=y)
-    lbl['font'] = fontx
+    lbl["font"] = fontx
     return lbl
 
 
 def numericFix(val):
-    if val < 10:
-        return "0" + str(val)
-    return str(val)
+    return "0" + str(val) if val < 10 else str(val)
 
 
 def changeAscii(cr, dd):
@@ -150,15 +194,21 @@ def changeAscii(cr, dd):
 
 
 def CreateQrCode():
-    random_list = list(range(1,41))
+    random_list = list(range(1, 41))
     random.shuffle(random_list)
 
     indexer = numericFix(random_list[0])
-    now = datetime.now()
+    now = time.localtime()
 
-    total = "QR"+indexer+numericFix(now.day)+numericFix(now.hour)+numericFix(now.minute)+numericFix(now.second)+deviceId
+    # orijinaliniz datetime ileydi; aynı mantık
+    day = numericFix(now.tm_mday)
+    hour = numericFix(now.tm_hour)
+    minute = numericFix(now.tm_min)
+    second = numericFix(now.tm_sec)
 
-    newValue = "QR"+indexer
+    total = "QR" + indexer + day + hour + minute + second + deviceId
+
+    newValue = "QR" + indexer
     sayac = 0
 
     for char in total:
@@ -175,98 +225,166 @@ def CreateQrCode():
     return qr.make_image(fill_color="black", back_color="white")
 
 
-def SendExceptionInfo(e):
+# -----------------------------------------------------------------------------
+# GPIO
+# -----------------------------------------------------------------------------
+yon1 = None
+yon2 = None
+
+def init_gpio():
+    global yon1, yon2
+    if not isGpio:
+        return
+
     try:
-        url = baseUrl+'/Entry/GetExceptionInfo'
-        myobj = {'EntryId': deviceId, 'BranchId': branchId, 'ErrorMessage': str(e)}
-        session.post(url, json=myobj, headers=_http_headers, timeout=_request_timeout)
+        yon1 = IOS(yon1_pin)
+        yon1.off()
+    except Exception as e:
+        print(f"[GPIO] Pin {yon1_pin} baslatilamadi (GPIO busy): {e}")
+        if DEBUG_TURNIKE_LOG:
+            traceback.print_exc()
+        yon1 = None
+
+    try:
+        yon2 = IOS(yon2_pin)
+        yon2.off()
+    except Exception as e:
+        print(f"[GPIO] Pin {yon2_pin} baslatilamadi (GPIO busy): {e}")
+        if DEBUG_TURNIKE_LOG:
+            traceback.print_exc()
+        yon2 = None
+
+def gpio_pulse(dev: IOS, duration=0.25):
+    if dev is None:
+        return
+    dev.on()
+    time.sleep(duration)
+    dev.off()
+
+def TurnstyleTurn(direction):
+    """
+    direction örnek:
+      - 1: yon1
+      - 2: yon2
+    API farklı dönüyorsa burayı uyarlayın.
+    """
+    try:
+        if not isGpio:
+            return
+
+        # direction normalize
+        try:
+            d = int(direction)
+        except:
+            d = 1
+
+        if d == 2:
+            gpio_pulse(yon2)
+        else:
+            gpio_pulse(yon1)
+
+    except Exception as e:
+        SendExceptionInfo(e)
+
+
+def cleanup_gpio():
+    global yon1, yon2
+    try:
+        if yon1 is not None:
+            yon1.off()
+            yon1.close()
+    except:
+        pass
+    try:
+        if yon2 is not None:
+            yon2.off()
+            yon2.close()
+    except:
+        pass
+    try:
+        GPIO.cleanup()
     except:
         pass
 
+atexit.register(cleanup_gpio)
 
+# -----------------------------------------------------------------------------
+# UI SETUP
+# -----------------------------------------------------------------------------
 pencere = Tk()
-pencere.configure(bg='black')
+pencere.configure(bg="black")
 pencere.title("CRM GYM")
 
 C = Canvas(pencere, bg="black")
-pencere.after(1000, lambda: pencere.wm_attributes('-fullscreen', 'true'))
+pencere.after(1000, lambda: pencere.wm_attributes("-fullscreen", "true"))
 
 filename = None
 
+# background image
 img_data = safe_get(baseUrl + "/entry/yenifitstation.png")
 if img_data:
     try:
         img = Image.open(BytesIO(img_data))
         filename = ImageTk.PhotoImage(img)
     except:
-        pass
+        filename = None
 
 if filename is None:
     local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yenifitstation.png")
     if os.path.isfile(local):
-        filename = PhotoImage(file=local)
+        try:
+            filename = ImageTk.PhotoImage(Image.open(local))
+        except:
+            filename = None
 
 if filename:
     background_label = Label(pencere, image=filename)
 else:
-    background_label = Label(pencere, bg='black')
+    background_label = Label(pencere, bg="black")
 
 background_label.place(x=100, y=90, relwidth=1, relheight=1)
 
-myFont2 = font.Font(family='Castellar', size=24, weight='bold')
-myFont = font.Font(family='Castellar', size=16, weight='bold')
+myFont2 = font.Font(family="Castellar", size=24, weight="bold")
+myFont = font.Font(family="Castellar", size=16, weight="bold")
 
-AbonelikTarihi = CreateControls(pencere,"black","yellow","",600,100,myFont)
-KalanGun = CreateControls(pencere,"black","yellow","",600,250,myFont)
-KalanGunDeger = CreateControls(pencere,"black","white","",600,280,myFont2)
-AbonelikTarihiDeger = CreateControls(pencere,"black","white","",600,130,myFont2)
-SonucDeger = CreateControls(pencere,"black","white","",50,500,myFont2)
+AbonelikTarihi = CreateControls(pencere, "black", "yellow", "", 600, 100, myFont)
+KalanGun = CreateControls(pencere, "black", "yellow", "", 600, 250, myFont)
+KalanGunDeger = CreateControls(pencere, "black", "white", "", 600, 280, myFont2)
+AbonelikTarihiDeger = CreateControls(pencere, "black", "white", "", 600, 130, myFont2)
+SonucDeger = CreateControls(pencere, "black", "white", "", 50, 500, myFont2)
 
-KartNoInput = Entry(pencere,bg='black')
-KartNoInput.place(x=90,y=20,width=3,height=3)
-
-yon1 = None
-try:
-    yon1 = IOS(yon1_pin)
-    yon1.on()
-except Exception as e:
-    print("[GPIO] Pin {} baslatilamadi (GPIO busy veya baska process kullaniyor): {}".format(yon1_pin, e))
-    if DEBUG_TURNIKE_LOG:
-        traceback.print_exc()
-    print("[GPIO] Turnike donusu calismayacak. Tek process calistigindan emin olun; gerekirse reboot.")
+KartNoInput = Entry(pencere, bg="black")
+KartNoInput.place(x=90, y=20, width=3, height=3)
 
 
-def TurnstyleTurn(direction):
-    try:
-        if yon1 is not None:
-            yon1.on()
-            time.sleep(0.25)
-            yon1.off()
-    except Exception as e:
-        SendExceptionInfo(e)
-
-
+# -----------------------------------------------------------------------------
+# UI UPDATE (THREAD SAFE)
+# -----------------------------------------------------------------------------
 def ValidationQuery(ali):
+    """
+    Bu fonksiyon UI thread'inde çalışmalı.
+    """
     try:
         if ali.get("isSuccess"):
-            SonucDeger.config(text=ali["data"]["message"])
-            KalanGunDeger.config(text=ali["data"]["daysLeft"])
-            AbonelikTarihiDeger.config(text=ali["data"]["membershipDateText"])
+            data = ali.get("data", {})
+            SonucDeger.config(text=str(data.get("message", "")))
+            KalanGunDeger.config(text=str(data.get("daysLeft", "")))
+            AbonelikTarihiDeger.config(text=str(data.get("membershipDateText", "")))
 
-            TurnstyleTurn(ali["data"]["type"])
+            TurnstyleTurn(data.get("type", 1))
 
-            pathOfImage = ali["data"]["picture"]
-            img_data = safe_get(pathOfImage)
-
-            if img_data:
-                img = Image.open(BytesIO(img_data))
-                test = ImageTk.PhotoImage(img)
-                label1 = tkinter.Label(image=test)
-                label1.image = test
-                label1.place(x=1600, y=1900)
-                label1.after(beklemeSuresi, lambda: label1.destroy())
+            pathOfImage = data.get("picture")
+            if pathOfImage:
+                img_data = safe_get(pathOfImage)
+                if img_data:
+                    img = Image.open(BytesIO(img_data))
+                    test = ImageTk.PhotoImage(img)
+                    label1 = tk.Label(pencere, image=test)
+                    label1.image = test
+                    label1.place(x=1600, y=1900)
+                    label1.after(beklemeSuresi, lambda: label1.destroy())
         else:
-            SonucDeger.config(text=ali["data"]["message"])
+            SonucDeger.config(text=str(ali.get("data", {}).get("message", "")))
 
     except Exception as e:
         SendExceptionInfo(e)
@@ -274,10 +392,10 @@ def ValidationQuery(ali):
 
 def dialog():
     try:
-        url = baseUrl+'/Entry/GetMembershipInformation'
-        myobj = {'EntryId': KartNoInput.get(), 'BranchId': branchId}
-        KartNoInput.delete(0,"end")
-        ali = safe_post(url,myobj)
+        url = baseUrl + "/Entry/GetMembershipInformation"
+        myobj = {"EntryId": KartNoInput.get(), "BranchId": branchId}
+        KartNoInput.delete(0, "end")
+        ali = safe_post(url, myobj)
         ValidationQuery(ali)
     except Exception as e:
         SendExceptionInfo(e)
@@ -286,26 +404,39 @@ def dialog():
 def CreateQr():
     try:
         image = CreateQrCode()
-        img = image.resize((325,325))
+        img = image.resize((325, 325))
         tkimg = ImageTk.PhotoImage(img)
-        label2 = tkinter.Label(pencere,image=tkimg)
-        label2.place(x=840,y=50)
+        label2 = tk.Label(pencere, image=tkimg)
+        label2.place(x=840, y=50)
         label2.image = tkimg
-        label2.after(29000,lambda: label2.destroy())
+        label2.after(qrbeklemeSuresi - 1000, lambda: label2.destroy())
     except Exception as e:
         SendExceptionInfo(e)
 
 
+# -----------------------------------------------------------------------------
+# TIMER
+# -----------------------------------------------------------------------------
 class RepeatTimer(Timer):
     def run(self):
         while not self.finished.wait(self.interval):
-            self.function(*self.args, **self.kwargs)
+            try:
+                self.function(*self.args, **self.kwargs)
+            except Exception as e:
+                SendExceptionInfo(e)
 
 
-def callback(ch,method,properties,body):
+# -----------------------------------------------------------------------------
+# RABBITMQ
+# -----------------------------------------------------------------------------
+def callback(ch, method, properties, body):
+    """
+    Rabbit thread'inden UI'ye dokunma!
+    after() ile UI thread'ine aktar.
+    """
     try:
         ali = json.loads(body)
-        ValidationQuery(ali)
+        pencere.after(0, lambda: ValidationQuery(ali))
     except Exception as e:
         SendExceptionInfo(e)
 
@@ -316,19 +447,20 @@ def receiver():
         if not (queueName and queueUrl):
             time.sleep(reconnect_delay)
             continue
+
         try:
             parameters = pika.URLParameters(queueUrl)
             connection = pika.BlockingConnection(parameters)
             channel = connection.channel()
 
-            channel.exchange_declare(exchange=queueName, exchange_type='fanout')
+            channel.exchange_declare(exchange=queueName, exchange_type="fanout")
 
-            result = channel.queue_declare(queue='',exclusive=True)
+            result = channel.queue_declare(queue="", exclusive=True)
             queue_name = result.method.queue
 
             channel.queue_bind(exchange=queueName, queue=queue_name)
 
-            channel.basic_consume(queue=queue_name,on_message_callback=callback,auto_ack=True)
+            channel.basic_consume(queue=queue_name, on_message_callback=callback, auto_ack=True)
 
             reconnect_delay = 15
             channel.start_consuming()
@@ -338,17 +470,29 @@ def receiver():
             time.sleep(reconnect_delay)
 
 
-CreateQr()
-timer = RepeatTimer(qrSuresi, CreateQr)
-timer.start()
+# -----------------------------------------------------------------------------
+# MAIN
+# -----------------------------------------------------------------------------
+def main():
+    init_gpio()
 
-receive_thread = Thread(target=receiver)
-receive_thread.daemon=True
-receive_thread.start()
+    CreateQr()
+    timer = RepeatTimer(qrSuresi, CreateQr)
+    timer.daemon = True
+    timer.start()
 
-KartNoInput.focus()
-KartNoInput.bind("<Return>", lambda e: dialog())
+    receive_thread = Thread(target=receiver, daemon=True)
+    receive_thread.start()
 
-pencere.mainloop()
+    KartNoInput.focus()
+    KartNoInput.bind("<Return>", lambda e: dialog())
 
-sys.exit()
+    try:
+        pencere.mainloop()
+    finally:
+        cleanup_gpio()
+        _cleanup_lock()
+
+
+if __name__ == "__main__":
+    main()
