@@ -225,15 +225,23 @@ SonucDeger = CreateControls(pencere,"black","white","",50,500,myFont2)
 KartNoInput = Entry(pencere,bg='black')
 KartNoInput.place(x=90,y=20,width=3,height=3)
 
-yon1 = IOS(yon1_pin)
-yon1.on()
+yon1 = None
+try:
+    yon1 = IOS(yon1_pin)
+    yon1.on()
+except Exception as e:
+    print("[GPIO] Pin {} baslatilamadi (GPIO busy veya baska process kullaniyor): {}".format(yon1_pin, e))
+    if DEBUG_TURNIKE_LOG:
+        traceback.print_exc()
+    print("[GPIO] Turnike donusu calismayacak. Tek process calistigindan emin olun; gerekirse reboot.")
 
 
 def TurnstyleTurn(direction):
     try:
-        yon1.on()
-        time.sleep(0.25)
-        yon1.off()
+        if yon1 is not None:
+            yon1.on()
+            time.sleep(0.25)
+            yon1.off()
     except Exception as e:
         SendExceptionInfo(e)
 
