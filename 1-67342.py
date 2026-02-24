@@ -139,12 +139,26 @@ def OnKeyPress(key):
 pencere = Tk()
 pencere.configure(bg='black')
 pencere.title("CRM GYM")
-# resim arkaplan
+# resim arkaplan: önce API'den (sunucu), yoksa yerel dosyadan
 C = Canvas(pencere, bg="black")
 #pencere.attributes('-fullscreen', True)
 pencere.after(1000, lambda: pencere.wm_attributes('-fullscreen', 'true'))
-filename = PhotoImage(file="/home/admin/Bookshelf/KUM/yenifitstation.png")
-background_label = Label(pencere, image=filename)
+filename = None
+try:
+    r = requests.get(baseUrl + "/entry/yenifitstation.png", timeout=5)
+    if r.status_code == 200 and r.content:
+        img = Image.open(BytesIO(r.content))
+        filename = ImageTk.PhotoImage(img)
+except Exception:
+    pass
+if filename is None:
+    _local = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yenifitstation.png")
+    if os.path.isfile(_local):
+        filename = PhotoImage(file=_local)
+if filename is not None:
+    background_label = Label(pencere, image=filename)
+else:
+    background_label = Label(pencere, bg='black')
 background_label.configure(bg='black')
 background_label.place(x=100, y=90, relwidth=1, relheight=1)
 
