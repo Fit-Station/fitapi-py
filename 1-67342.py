@@ -226,32 +226,40 @@ yon1 = None
 yon2 = None
 
 def init_gpio():
-    """old.py gibi: yon1 her zaman oluşturulur, başlangıçta on()."""
+    """Pin başlangıçta LOW (off) olmalı ki TurnstyleTurn'de LOW->HIGH pulse düzgün oluşsun."""
     global yon1, yon2
     try:
         yon1 = IOS(yon1_pin)
-        yon1.on()
+        yon1.off()  # Başlangıçta LOW: TurnstyleTurn'de on() ile yükselen kenar oluşur
+        print(f"[GPIO] yon1 Pin {yon1_pin} hazir (LOW)")
     except Exception as e:
-        print(f"[GPIO] Pin {yon1_pin} baslatilamadi (GPIO busy): {e}")
-        if DEBUG_TURNIKE_LOG:
-            traceback.print_exc()
+        print(f"[GPIO] Pin {yon1_pin} baslatilamadi: {e}")
+        traceback.print_exc()
         yon1 = None
 
     try:
         yon2 = IOS(yon2_pin)
         yon2.off()
+        print(f"[GPIO] yon2 Pin {yon2_pin} hazir (LOW)")
     except Exception as e:
         print(f"[GPIO] Pin {yon2_pin} baslatilamadi: {e}")
         yon2 = None
 
 def TurnstyleTurn(direction):
-    """old.py gibi: her zaman yon1 ile dönüş (on -> 0.25s -> off)."""
+    """LOW->HIGH->LOW pulse: motor kontrolcüsü yükselen kenarla tetiklenir."""
     try:
         if yon1 is not None:
-            yon1.on()
-            time.sleep(0.25)
-            yon1.off()
+            yon1.off()          # Önce LOW garantisi
+            time.sleep(0.05)    # 50ms bekleme
+            yon1.on()           # Yükselen kenar (LOW -> HIGH) → motor tetiklenir
+            time.sleep(0.5)     # 500ms HIGH tut (motor dönüş süresi)
+            yon1.off()          # Tekrar LOW
+            print(f"[GPIO] TurnstyleTurn: pulse gonderildi (yon1 pin={yon1_pin})")
+        else:
+            print("[GPIO] TurnstyleTurn: yon1 None! GPIO init basarisiz olmus olabilir.")
     except Exception as e:
+        print(f"[GPIO] TurnstyleTurn hatasi: {e}")
+        traceback.print_exc()
         SendExceptionInfo(e)
 
 
