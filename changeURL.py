@@ -53,23 +53,50 @@ global queueName
 global queueUrl
 global baseUrl
 
+yon1 = None
+yon2 = None
+yon1_pin = None
+yon2_pin = None
+qrSuresi = 30
+beklemeSuresi = 3000
+qrbeklemeSuresi = 30000
+isSerial = 0
+isGpio = 0
+queueName = ""
+queueUrl = ""
+
 
 
 baseUrl = "https://fitapi.fitstationcrm.com"
 fetchDataUrl = baseUrl+'/Entry/GetStartUpData'
 sUobj = {'DeviceId': deviceId}
-resultOfPost = requests.post(fetchDataUrl, json=sUobj)
-startUpDataResult = json.loads(resultOfPost.text)
-if startUpDataResult["isSuccess"]:
-    yon1_pin = int(startUpDataResult["data"]["yon1"])
-    yon2_pin = int(startUpDataResult["data"]["yon2"])
-    qrSuresi = int(startUpDataResult["data"]["qrSuresi"])
-    beklemeSuresi = int(startUpDataResult["data"]["beklemeSuresi"])
-    qrbeklemeSuresi = int(startUpDataResult["data"]["qrBeklemeSuresi"])
-    isSerial = int(startUpDataResult["data"]["isSerial"])
-    isGpio = int(startUpDataResult["data"]["isGpio"])
-    queueName = startUpDataResult["data"]["queueName"]
-    queueUrl = startUpDataResult["data"]["queueUrl"]
+
+try:
+    resultOfPost = requests.post(fetchDataUrl, json=sUobj, timeout=10)
+    startUpDataResult = resultOfPost.json()
+    startUpData = startUpDataResult.get("data") or {}
+
+    if startUpDataResult.get("isSuccess"):
+        if startUpData.get("yon1") is not None:
+            yon1_pin = int(startUpData["yon1"])
+        if startUpData.get("yon2") is not None:
+            yon2_pin = int(startUpData["yon2"])
+        if startUpData.get("qrSuresi") is not None:
+            qrSuresi = int(startUpData["qrSuresi"])
+        if startUpData.get("beklemeSuresi") is not None:
+            beklemeSuresi = int(startUpData["beklemeSuresi"])
+        if startUpData.get("qrBeklemeSuresi") is not None:
+            qrbeklemeSuresi = int(startUpData["qrBeklemeSuresi"])
+        if startUpData.get("isSerial") is not None:
+            isSerial = int(startUpData["isSerial"])
+        if startUpData.get("isGpio") is not None:
+            isGpio = int(startUpData["isGpio"])
+        queueName = startUpData.get("queueName", "")
+        queueUrl = startUpData.get("queueUrl", "")
+    else:
+        print(f"Startup verisi beklenen formatta gelmedi: {startUpDataResult}")
+except Exception as startup_error:
+    print(f"Startup verisi okunamadi: {startup_error}")
     
 def CreateControls(container, bgColor, fgColor, text, xCoordinate, yCoordinate, font, type):
     if type == "label":
@@ -164,10 +191,11 @@ KabulDugmesi = Button(pencere, width=1, height=1, highlightthickness=0, bd=0, bg
 KabulDugmesi.place(x=0, y=0)
 KartNoInput.focus()
 KartNoInput.bind("<Key>", OnKeyPress)
-yon1 = IOS(yon1_pin)
-#yon2 = IOS(yon2_pin)
-yon1.on()
-#yon2.on()
+if yon1_pin is not None:
+    yon1 = IOS(yon1_pin)
+    #yon2 = IOS(yon2_pin)
+    yon1.on()
+    #yon2.on()
 
 def callback(ch, method, properties, body):
     ali = json.loads(body)
@@ -182,6 +210,8 @@ def callback(ch, method, properties, body):
 def receiver():
     # while True:
     try:
+        if not queueUrl or not queueName:
+            return
         connection = None
         parameters = pika.URLParameters(queueUrl)
         connection = pika.BlockingConnection(parameters)
@@ -199,6 +229,8 @@ def receiver():
 
 def TurnstyleTurn(direction):
     try:
+        if yon1 is None:
+            return
         yon1.on()
         time.sleep(0.25)
         yon1.off()
