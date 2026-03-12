@@ -55,21 +55,59 @@ global baseUrl
 
 
 
+global baseUrl
+
+# API PascalCase döndürüyor: IsSuccess, Data, Yon1, QrSuresi, QueueUrl vb.
+def api_success(resp):
+    return bool(resp.get("IsSuccess", resp.get("isSuccess", False)))
+
+def api_data(resp):
+    return resp.get("Data", resp.get("data")) or {}
+
+def api_message(resp):
+    """Hata veya başarı mesajını döndürür (PascalCase Interactions veya data.message)."""
+    data = api_data(resp)
+    if isinstance(data, dict):
+        return data.get("message", data.get("Message", ""))
+    interactions = resp.get("Interactions") or []
+    if interactions and isinstance(interactions[0], dict):
+        return interactions[0].get("ResultMessage", "İşlem başarısız")
+    return "İşlem başarısız"
+
+
 baseUrl = "https://fitapi.fitstation.com.tr"
 fetchDataUrl = baseUrl+'/Entry/GetStartUpData'
 sUobj = {'DeviceId': deviceId}
 resultOfPost = requests.post(fetchDataUrl, json=sUobj)
-startUpDataResult = json.loads(resultOfPost.text)
-if startUpDataResult["isSuccess"]:
-    yon1_pin = int(startUpDataResult["data"]["yon1"])
-    yon2_pin = int(startUpDataResult["data"]["yon2"])
-    qrSuresi = int(startUpDataResult["data"]["qrSuresi"])
-    beklemeSuresi = int(startUpDataResult["data"]["beklemeSuresi"])
-    qrbeklemeSuresi = int(startUpDataResult["data"]["qrBeklemeSuresi"])
-    isSerial = int(startUpDataResult["data"]["isSerial"])
-    isGpio = int(startUpDataResult["data"]["isGpio"])
-    queueName = startUpDataResult["data"]["queueName"]
-    queueUrl = startUpDataResult["data"]["queueUrl"]
+
+try:
+    startUpDataResult = resultOfPost.json() if resultOfPost.headers.get('content-type', '').startswith('application/json') else {}
+except (ValueError, requests.exceptions.JSONDecodeError):
+    startUpDataResult = {}
+
+if resultOfPost.status_code == 200 and api_success(startUpDataResult):
+    data = api_data(startUpDataResult)
+    if isinstance(data, dict):
+        yon1_pin = int(data.get("Yon1", data.get("yon1", 17)))
+        yon2_pin = int(data.get("Yon2", data.get("yon2", 27)))
+        qrSuresi = int(data.get("QrSuresi", data.get("qrSuresi", 30)))
+        beklemeSuresi = int(data.get("BeklemeSuresi", data.get("beklemeSuresi", 6000)))
+        qrbeklemeSuresi = int(data.get("QrBeklemeSuresi", data.get("qrBeklemeSuresi", 29000)))
+        isSerial = int(data.get("IsSerial", data.get("isSerial", 0)))
+        isGpio = int(data.get("IsGpio", data.get("isGpio", 1)))
+        queueName = data.get("QueueName", data.get("queueName", ""))
+        queueUrl = data.get("QueueUrl", data.get("queueUrl", ""))
+    else:
+        yon1_pin, yon2_pin = 17, 27
+        qrSuresi, beklemeSuresi, qrbeklemeSuresi = 30, 6000, 29000
+        isSerial, isGpio = 0, 1
+        queueName, queueUrl = "", ""
+else:
+    print("GetStartUpData API yanıtı beklenen formatta değil veya hata:", resultOfPost.status_code, startUpDataResult)
+    yon1_pin, yon2_pin = 17, 27
+    qrSuresi, beklemeSuresi, qrbeklemeSuresi = 30, 6000, 29000
+    isSerial, isGpio = 0, 1
+    queueName, queueUrl = "", ""
     
 def CreateControls(container, bgColor, fgColor, text, xCoordinate, yCoordinate, font, type):
     if type == "label":
@@ -228,14 +266,18 @@ def dialog():
     KalanGun.after(beklemeSuresi, lambda: KalanGun.config(text=""))
 def ValidationQuery(ali):
     try:
-        if ali["isSuccess"]:
-            SonucDeger.config(text=ali["data"]["message"])
-            KalanGunDeger.config(text=ali["data"]["daysLeft"])
-            AbonelikTarihiDeger.config(text=ali["data"]["membershipDateText"])
-            AbonelikTarihi.config(text="ABONELÄ°K TARÄ°HÄ°:")
-            KalanGun.config(text="KALAN GÃœN SAYISI:")
-            pathOfImage = ali["data"]["picture"]
-            TurnstyleTurn(ali["data"]["type"])
+        if api_success(ali):
+            data = api_data(ali)
+            if not isinstance(data, dict):
+                SonucDeger.config(text=api_message(ali))
+                return
+            SonucDeger.config(text=data.get("message", data.get("Message", "")))
+            KalanGunDeger.config(text=data.get("daysLeft", data.get("DaysLeft", "")))
+            AbonelikTarihiDeger.config(text=data.get("membershipDateText", data.get("MembershipDateText", "")))
+            AbonelikTarihi.config(text="ABONELİK TARİHİ:")
+            KalanGun.config(text="KALAN GÜN SAYISI:")
+            pathOfImage = data.get("picture", data.get("Picture", ""))
+            TurnstyleTurn(data.get("type", data.get("Type", 0)))
             label1 = tkinter.Label()
             try:
                 try:
@@ -262,7 +304,7 @@ def ValidationQuery(ali):
                 SendExceptionInfo(er)
             # Position image
         else:
-            SonucDeger.config(text=ali["data"]["message"])
+            SonucDeger.config(text=api_message(ali))
     except Exception  as er:
         KartNoInput.focus()
         SendExceptionInfo(er)
